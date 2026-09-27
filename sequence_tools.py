@@ -5,12 +5,11 @@ RNA_BASES = set("ACGUN")
 
 
 def clean(seq):
-    """Upper-case the sequence and strip spaces / newlines / tabs."""
     return "".join(seq.split()).upper()
 
 
 def validate(seq, alphabet=DNA_BASES):
-    """Raise ValueError if seq contains a letter that isn't in `alphabet`."""
+    """Raise ValueError if seq contains a letter that isn't in alphabet."""
     bad = set(seq) - alphabet
     if bad:
         raise ValueError(f"Unexpected character(s) in sequence: {sorted(bad)}")
@@ -46,7 +45,7 @@ def transcribe(seq):
 
 
 # DNA -> protein (translation)
-# Standard genetic code, keyed by RNA codon. "*" marks a stop codon.
+
 CODON_TABLE = {
     "UUU": "F", "UUC": "F", "UUA": "L", "UUG": "L",
     "CUU": "L", "CUC": "L", "CUA": "L", "CUG": "L",
@@ -99,6 +98,68 @@ def find_motif(seq, motif):
     return positions
 
 
+# Codon search (in-frame)
+STOP_CODONS = ("TAA", "TAG", "TGA")
+START_CODON = "ATG"
+
+
+def normalise_codon(codon):
+    """Accept a DNA or RNA codon (e.g. 'uag' or 'TAG') and return it as DNA."""
+    codon = clean(codon).replace("U", "T")
+    validate(codon)
+    if len(codon) != 3:
+        raise ValueError(f"A codon must be exactly 3 bases, got '{codon}'")
+    return codon
+
+# find codon in frame
+def find_codon(seq, codon, reverse=True):
+    seq = clean(seq)
+    validate(seq)
+    codon = normalise_codon(codon)
+    length = len(seq)
+    hits = {}
+
+    for offset in range(3):
+        frame = offset + 1
+        hits[frame] = [i + 1 for i in range(offset, length - 2, 3)
+                       if seq[i:i + 3] == codon]
+
+    if reverse:
+        rc = reverse_complement(seq)
+        for offset in range(3):
+            frame = -(offset + 1)
+            # a codon at rc[i:i+3] covers forward bases (length-i-3)..(length-i-1)
+            hits[frame] = sorted(length - i - 2 for i in range(offset, length - 2, 3)
+                                 if rc[i:i + 3] == codon)
+    return hits
+
+
+# find stop codon
+def find_stop_codons(seq, reverse=True):
+    results = {}
+    for stop in STOP_CODONS:
+        for frame, positions in find_codon(seq, stop, reverse).items():
+            results.setdefault(frame, [])
+            results[frame].extend((pos, stop) for pos in positions)
+    for frame in results:
+        results[frame].sort()
+    return results
+
+
+def print_frame_hits(hits, label):
+    total = sum(len(v) for v in hits.values())
+    print(f"   {label}: {total} in-frame hit(s)")
+    for frame in sorted(hits, key=lambda f: (f < 0, abs(f))):
+        found = hits[frame]
+        if not found:
+            shown = "-"
+        elif isinstance(found[0], tuple):          # (position, codon) pairs
+            shown = ", ".join(f"{pos} ({codon})" for pos, codon in found)
+        else:
+            shown = ", ".join(str(pos) for pos in found)
+        print(f"      frame {frame:+d} : {shown}")
+
+
 # checker
 EXAMPLE = "ATGGCCATTGTAATGGGCCGCTGAAAGGGTGCCCGATAG"
 
@@ -115,6 +176,20 @@ def self_test():
     assert translate("ATGTTTTAA", stop_at_stop=False) == "MF*"
     assert find_motif("ATATA", "ATA") == [1, 3]               # overlapping
     assert find_motif("ACGT", "TTT") == []
+
+    # codon search
+    assert find_codon("ATGTTTTAA", "TAA", reverse=False) == {1: [7], 2: [], 3: []}
+    assert find_codon("ATGTTTTAA", "uaa", reverse=False)[1] == [7]   # RNA input ok
+    assert find_codon("CTAAG", "TAA", reverse=False) == {1: [], 2: [2], 3: []}
+    # "TTA" on the forward strand is "TAA" on the reverse strand
+    assert find_codon("TTA", "TAA")[-1] == [1]
+    assert find_stop_codons("ATGTAGTGA", reverse=False)[1] == [(4, "TAG"), (7, "TGA")]
+    try:
+        normalise_codon("AT")
+        assert False, "short codon should raise"
+    except ValueError:
+        pass
+
 
 # the report
 def report(seq):
@@ -144,6 +219,11 @@ def report(seq):
     print("Transcribed (RNA)  :", transcribe(seq))
     print("Protein (to stop)  :", translate(seq))
     print("Protein (full)     :", translate(seq, stop_at_stop=False))
+    print()
+
+    print("Codons (positions are 1-based, forward strand):")
+    print_frame_hits(find_codon(seq, START_CODON), "Start codons (ATG)")
+    print_frame_hits(find_stop_codons(seq), "Stop codons (TAA/TAG/TGA)")
     print("=" * 55)
 
 
@@ -168,6 +248,26 @@ def motif_search(seq):
             print(f"   '{motif}' not found")
 
 
+def codon_search(seq):
+    """Ask the user for codons and report in-frame hits. Blank line quits."""
+    seq = clean(seq)
+    print("\nCodon finder  -  type a codon (e.g. TAG or UAG), 'stop' for all")
+    print("stop codons, or press Enter to quit")
+    while True:
+        query = input("   codon > ").strip()
+        if query == "":
+            print("   done.")
+            break
+        try:
+            if query.lower() == "stop":
+                print_frame_hits(find_stop_codons(seq), "Stop codons")
+            else:
+                codon = normalise_codon(query)
+                print_frame_hits(find_codon(seq, codon), f"'{codon}'")
+        except ValueError as error:
+            print("  ", error)
+
+
 if __name__ == "__main__":
     self_test()
     print("All self-tests passed.\n")
@@ -177,3 +277,4 @@ if __name__ == "__main__":
 
     report(sequence)
     motif_search(sequence)
+    codon_search(sequence)
